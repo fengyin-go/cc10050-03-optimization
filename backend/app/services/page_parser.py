@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.replay_flow import replay_flow
 from app.store import store
 
 
@@ -21,6 +22,55 @@ class PageParserService(BaseModuleService):
     STATUS_ORDER = ["草稿", "已启用", "已废弃"]
     ACTION_RULES = {"启用模板": "已启用", "废弃模板": "已废弃"}
     NEGATIVE_ACTIONS = []
+
+    SWITCH_ACTIONS = {
+        "切换模板", "切换版本", "切换并启用", "切换到此版本",
+        "应用版本切换", "废弃旧版并启用新版", "提交模板切换",
+    }
+    CLAIM_ACTIONS = {
+        "领取回放样本", "从回放队列领取", "从回放队列领取样本",
+        "领取队列样本", "领取样本", "领取回放",
+    }
+
+    def get_entry(self, entry_id: int) -> dict[str, Any] | None:
+        entry = super().get_entry(entry_id)
+        if entry is None:
+            return None
+        entry["switch_receipts"] = [
+            s for s in store.rows("template_switches")
+            if s.get("new_template_id") == entry_id or s.get("old_template_id") == entry_id
+        ]
+        entry["queued_replays"] = [
+            r for r in store.rows("replays")
+            if r.get("site") == entry.get("适用站点") and r.get("status") in {"待领取", "失败待重试"}
+        ]
+        return entry
+
+    def run_action(
+        self,
+        entry_id: int,
+        action: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+        context = context or {}
+        if action in self.SWITCH_ACTIONS:
+            response = replay_flow.switch_template(entry_id, context)
+            return response.get("entry"), response["message"], response
+        if action in self.CLAIM_ACTIONS:
+            response = replay_flow.claim_next(entry_id, context)
+            entry = store.find(self.MODULE, entry_id)
+            return entry, response["message"], response
+        if action == "启用模板":
+            response = self.enable_template(entry_id)
+            return store.find(self.MODULE, entry_id), response["message"], response
+        if action == "废弃模板":
+            response = self.deprecate_template(entry_id)
+            return store.find(self.MODULE, entry_id), response["message"], response
+        outcome = super().run_action(entry_id, action, context)
+        if len(outcome) == 3:
+            return outcome  # type: ignore[return-value]
+        entry, message = outcome
+        return entry, message, {}
 
     # ---- 业务扩展：模板解析与字段提取 ----
 
@@ -57,24 +107,35 @@ class PageParserService(BaseModuleService):
             "blocking_samples": len(pending_samples),
         }
 
-    def parse_sample(self, entry_id: int, sample_id: int) -> dict[str, Any]:
-        """用模板解析指定样本，产出结构化字段并更新样本状态。"""
-        entry = store.find(self.MODULE, entry_id)
-        if entry is None or entry.get("status") != "已启用":
-            return {"ok": False, "message": "模板不存在或未启用"}
-        sample = store.find("sample_store", sample_id)
-        if sample is None:
-            return {"ok": False, "message": f"样本 {sample_id} 不存在"}
-        if sample.get("站点名称") != entry.get("适用站点"):
-            return {"ok": False, "message": "样本站点与模板适用站点不匹配"}
-        sample["status"] = "已解析"
-        sample["pending"] = False
-        return {
-            "ok": True,
-            "message": "样本解析完成",
-            "fields": entry.get("字段映射", ""),
-            "version": entry.get("解析版本", ""),
-        }
+    def parse_sample(
+        self,
+        entry_id: int,
+        sample_id: int,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """用指定模板领取/解析样本，并写出带版本的结构化价格字段与回执。"""
+        context = dict(context or {})
+        replay_id = context.get("replay_id")
+        if not replay_id:
+            started = replay_flow.start_replay(sample_id, context)
+            replay = started.get("replay") or {}
+            replay_id = replay.get("id")
+            if not replay_id:
+                return started
+        context["template_id"] = entry_id
+        return replay_flow.continue_replay(str(replay_id), context)
+
+    def switch_version(self, entry_id: int, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """切换到当前模板版本：同事务废弃同站旧版并启用新版，返回切换回执。"""
+        return replay_flow.switch_template(entry_id, context or {})
+
+    def switch_template(self, entry_id: int, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """switch_version 的语义别名，便于按业务名直接调用。"""
+        return self.switch_version(entry_id, context)
+
+    def claim_next_sample(self, entry_id: int, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """由当前模板从对应站点的回放队列领取下一笔样本。"""
+        return replay_flow.claim_next(entry_id, context or {})
 
     def report_to_audit(self, entry_id: int, hit_rate: float) -> dict[str, Any]:
         """向解析质量审计上报字段命中率。"""

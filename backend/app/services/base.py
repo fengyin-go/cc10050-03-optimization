@@ -59,7 +59,12 @@ class BaseModuleService:
         rows.append(entry)
         return entry, []
 
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+    def run_action(
+        self,
+        entry_id: int,
+        action: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str] | tuple[dict[str, Any] | None, str, dict[str, Any]]:
         entry = store.find(self.MODULE, entry_id)
         if entry is None:
             return None, f"{self.ENTITY} {entry_id} 不存在或已归档"
@@ -70,6 +75,36 @@ class BaseModuleService:
         entry["pending"] = target != self.STATUS_ORDER[-1]
         entry["abnormal"] = action in self.NEGATIVE_ACTIONS
         return entry, f"{self.ENTITY}已{action}"
+
+    def dispatch_action(
+        self,
+        entry_id: int,
+        payload: Any,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """统一动作入口；模块可通过三元素返回值补充回执等富结构。"""
+        context = payload.model_dump(exclude={"action"}) if hasattr(payload, "model_dump") else dict(payload or {})
+        context["idempotency_key"] = (
+            context.get("idempotency_key")
+            or (context.get("values") or {}).get("idempotency_key")
+            or idempotency_key
+        )
+        if isinstance(context.get("values"), dict):
+            # 表单值作为低优先级上下文，显式字段和幂等头优先。
+            for key, value in context["values"].items():
+                if context.get(key) in (None, ""):
+                    context[key] = value
+        outcome = self.run_action(entry_id, str(context.get("action") or payload.action), context)
+        extra: dict[str, Any] = {}
+        if len(outcome) == 3:
+            entry, message, extra = outcome
+        else:
+            entry, message = outcome
+        ok = bool(extra.pop("ok", entry is not None))
+        result = {"ok": ok, "message": message, "entry": entry}
+        result.update(extra)
+        return result
 
     def domain_snapshot(self) -> dict[str, Any]:
         """输出模块级数据质量快照，供跨模块消费和题位源码锚点使用。"""

@@ -5,7 +5,7 @@ import csv
 import io
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
@@ -92,7 +92,12 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
 
 
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
-def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
+def run_action(
+    module: str,
+    entry_id: int,
+    payload: ActionPayload,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
-    return ActionResult(ok=entry is not None, message=message, entry=entry)
+    result = service.dispatch_action(entry_id, payload, idempotency_key=idempotency_key)
+    return ActionResult(**result)

@@ -71,6 +71,37 @@ npm run dev
 | 人工复核队列 | `match_review` | 复核记录 | 记录编号、匹配记录、复核结论 |
 | 采集量指标 | `collect_metrics` | 指标记录 | 统计时间、站点名称、抓取量 |
 
+## 页面样本回放与模板切换
+
+页面样本库内置了“云选数码官方店”的验收样本（样本 ID `4`，批次 `价格回放58-48`）：
+
+- 模板 `4` / `v1`（`.origin-price`）提取原价 `58`，并留存原始解析结果 `PR-0001`；
+- 模板 `5` / `v2`（`.promo-price`）启用后提取促销价 `48`；
+- 模板 `6` 是其他站点的启用版本，用于验证跨站模板不能领取该样本。
+
+推荐顺序：样本页点“回放/接续回放” → 模板页对 `v2` 点“切换模板/切换版本” →
+回样本页“继续回放” → “查询样本回执与处理顺序”。回放单、结构化结果、模板切换回执、
+操作顺序台账和失败恢复记录均会挂在样本详情中；同一回放单配合 `Idempotency-Key`
+重试只保留一份有效解析结果。
+
+常用富接口：
+
+```text
+GET  /api/sample_store/{id}/replay-state
+POST /api/sample_store/{id}/replays
+POST /api/sample_store/{id}/continue
+POST /api/replays/{replayId}/continue
+POST /api/replays/{replayId}/retry
+POST /api/replays/{replayId}/confirm
+POST /api/page_parser/{templateId}/switch
+GET  /api/template-switches
+GET  /api/replay-ledger
+```
+
+通用 `/api/sample_store/{id}/actions` 也支持 `回放`、`接续回放`、`继续回放`、
+`重试回放`、`确认回执`、`查询回执`；`/api/page_parser/{id}/actions` 支持
+`切换模板`、`切换版本`、`领取回放样本`。
+
 ## 约定
 
 - 全部模块共享`frontend/src/views/WorkbenchView.vue|tsx`和一套资源路由。

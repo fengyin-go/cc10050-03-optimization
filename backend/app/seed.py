@@ -545,3 +545,209 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
   '解析量': '采集量指标样例3',
   '产出量': '采集量指标样例3'}]
 }
+
+
+# 回放协同场景的固定夹具：同站点新旧模板分别提取原价 58 与促销价 48。
+REPLAY_SITE = "云选数码官方店"
+REPLAY_SAMPLE_ID = 4
+REPLAY_HTML = (
+    '<article class="goods-price">'
+    '<span class="origin-price">原价 ¥58.00</span>'
+    '<span class="promo-price">促销价 ¥48.00</span>'
+    "</article>"
+)
+
+SEED_ROWS["page_parser"].extend([
+    {
+        "id": 4,
+        "status": "已启用",
+        "pending": False,
+        "abnormal": False,
+        "模板名称": "云选数码价格模板-旧版原价",
+        "适用站点": REPLAY_SITE,
+        "选择器路径": ".origin-price",
+        "字段映射": '{"price": ".origin-price", "original_price": ".origin-price"}',
+        "解析版本": "v1",
+        "解析规则": {
+            "price": ".origin-price",
+            "价格": ".origin-price",
+            "original_price": ".origin-price",
+            "原价": ".origin-price",
+        },
+        "switch_sequence": 0,
+    },
+    {
+        "id": 5,
+        "status": "草稿",
+        "pending": True,
+        "abnormal": False,
+        "模板名称": "云选数码价格模板-新版促销价",
+        "适用站点": REPLAY_SITE,
+        "选择器路径": ".promo-price",
+        "字段映射": (
+            '{"price": ".promo-price", "promo_price": ".promo-price", '
+            '"original_price": ".origin-price"}'
+        ),
+        "解析版本": "v2",
+        "解析规则": {
+            "price": ".promo-price",
+            "价格": ".promo-price",
+            "promo_price": ".promo-price",
+            "促销价": ".promo-price",
+            "original_price": ".origin-price",
+            "原价": ".origin-price",
+        },
+        "switch_sequence": 0,
+    },
+    {
+        "id": 6,
+        "status": "已启用",
+        "pending": False,
+        "abnormal": False,
+        "模板名称": "跨境好物馆价格模板-其他站点版本",
+        "适用站点": "跨境好物馆",
+        "选择器路径": ".overseas-price",
+        "字段映射": '{"price": ".overseas-price"}',
+        "解析版本": "v9-other-site",
+        "解析规则": {"price": ".overseas-price", "价格": ".overseas-price"},
+        "switch_sequence": 0,
+    },
+])
+
+SEED_ROWS["sample_store"].append({
+    "id": REPLAY_SAMPLE_ID,
+    "status": "已解析",
+    "pending": False,
+    "abnormal": False,
+    "样本批次": "价格回放58-48",
+    "站点名称": REPLAY_SITE,
+    "原始HTML摘要": '<span class="origin-price">¥58</span><span class="promo-price">¥48</span>',
+    "原始HTML": REPLAY_HTML,
+    "抓取时间": "2026-11-26 09:00:00",
+    "样本指纹": "fp-yunxuan-58-48",
+    "latest_parse_result_id": "PR-0001",
+    "active_replay_id": "",
+})
+
+SEED_ROWS["parse_results"] = [{
+    "id": 1,
+    "result_no": "PR-0001",
+    "sample_id": REPLAY_SAMPLE_ID,
+    "replay_id": "RP-S4-R0",
+    "round": 0,
+    "source": "原始解析",
+    "template_id": 4,
+    "template_name": "云选数码价格模板-旧版原价",
+    "template_version": "v1",
+    "version": "v1",
+    "site": REPLAY_SITE,
+    "fields": {
+        "price": 58,
+        "价格": 58,
+        "current_price": 58,
+        "当前价格": 58,
+        "original_price": 58,
+        "old_price": 58,
+        "原价": 58,
+        "旧价格": 58,
+        "promo_price": None,
+        "促销价": None,
+        "currency": "CNY",
+    },
+    "price": 58,
+    "status": "可查询",
+    "confirmed": True,
+    "created_at": "2026-11-26 09:05:00+00:00",
+}]
+
+SEED_ROWS["replays"] = [{
+    "id": "RP-S4-R0",
+    "replay_no": "RP-S4-R0",
+    "sample_id": REPLAY_SAMPLE_ID,
+    "round": 0,
+    "idempotency_key": "idem-RP-S4-R0-seed",
+    "status": "已确认",
+    "stage": "历史回放已确认；其中一次断线已通过原单号重试恢复",
+    "site": REPLAY_SITE,
+    "requested_by": "值班员",
+    "template_id": 4,
+    "template_name": "云选数码价格模板-旧版原价",
+    "template_version": "v1",
+    "parse_result_id": "PR-0001",
+    "structured_fields": SEED_ROWS["parse_results"][0]["fields"],
+    "attempts": [
+        {
+            "attempt": 1,
+            "at": "2026-11-26 09:06:00+00:00",
+            "state": "断线未知",
+            "ok": False,
+            "reason": "回放响应丢失，值班员不确定服务端是否已登记",
+            "recovery_steps": [
+                "不要新建回放，保留原回放单号 RP-S4-R0",
+                "先按样本查询服务端是否已有解析结果",
+                "使用同一幂等键重试；服务端只保留一份有效结果",
+            ],
+        },
+        {
+            "attempt": 2,
+            "at": "2026-11-26 09:07:00+00:00",
+            "state": "已恢复",
+            "ok": True,
+            "reason": "命中同一笔回放的幂等记录，未重复登记解析结果",
+        },
+    ],
+    "recovery": {
+        "status": "已恢复",
+        "failure_reason": "响应丢失/断线重试",
+        "recovered_at": "2026-11-26 09:07:00+00:00",
+        "steps": [
+            "按原样本 ID 或样本指纹查询受理状态",
+            "使用原回放单号和同一幂等键重试",
+            "核对解析结果的模板版本与价格字段",
+        ],
+    },
+    "receipts": [{
+        "receipt_no": "RC-0001",
+        "kind": "历史回放处理回执",
+        "status": "已恢复",
+        "replay_id": "RP-S4-R0",
+        "sample_id": REPLAY_SAMPLE_ID,
+        "template_version": "v1",
+        "price": 58,
+        "message": "断线重试已恢复，解析结果 PR-0001 唯一有效",
+        "issued_at": "2026-11-26 09:07:00+00:00",
+        "next_actions": ["查询样本", "发起新一轮回放"],
+    }],
+    "created_at": "2026-11-26 09:05:30+00:00",
+    "claimed_at": "2026-11-26 09:05:40+00:00",
+    "completed_at": "2026-11-26 09:07:00+00:00",
+    "confirmed_at": "2026-11-26 09:08:00+00:00",
+}]
+
+SEED_ROWS["template_switches"] = []
+SEED_ROWS["idempotency_keys"] = []
+SEED_ROWS["operation_ledger"] = [
+    {
+        "sequence": 1,
+        "at": "2026-11-26 09:05:00+00:00",
+        "operation": "parse.completed",
+        "actor": "解析模板 v1",
+        "sample_id": REPLAY_SAMPLE_ID,
+        "replay_id": "RP-S4-R0",
+        "template_id": 4,
+        "template_version": "v1",
+        "summary": "旧版模板按原样本提取价格 58，解析结果 PR-0001 已留存",
+    },
+    {
+        "sequence": 2,
+        "at": "2026-11-26 09:07:00+00:00",
+        "operation": "replay.recovered",
+        "actor": "值班员",
+        "sample_id": REPLAY_SAMPLE_ID,
+        "replay_id": "RP-S4-R0",
+        "template_id": 4,
+        "template_version": "v1",
+        "summary": "同一笔断线回放重试成功，仅保留 PR-0001 一份有效结果",
+    },
+]
+

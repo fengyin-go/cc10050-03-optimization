@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.replay_flow import replay_flow
 from app.store import store
 
 
@@ -21,6 +22,118 @@ class SampleStoreService(BaseModuleService):
     STATUS_ORDER = ["已保存", "已解析", "已过期"]
     ACTION_RULES = {"标记解析": "已解析", "标记过期": "已过期"}
     NEGATIVE_ACTIONS = []
+
+    REPLAY_START_ACTIONS = {"回放", "发起回放", "创建回放", "加入回放队列", "回放队列"}
+    REPLAY_CONTINUE_ACTIONS = {
+        "继续回放", "继续原回放", "接续回放", "接续原回放",
+        "领取并解析", "领取并继续", "领取样本",
+    }
+    REPLAY_RETRY_ACTIONS = {"重试回放", "断线重试", "断线重试同一笔", "重试本笔回放"}
+    REPLAY_CONFIRM_ACTIONS = {"确认回执", "确认回放", "确认分轮回执", "确认本轮结果"}
+    REPLAY_QUERY_ACTIONS = {"查询回执", "查询回放回执", "刷新回执", "查询处理顺序"}
+
+    def list_entries(
+        self,
+        *,
+        filters: dict[str, str] | None = None,
+        keyword: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        rows, total = super().list_entries(
+            filters=filters, keyword=keyword, status=status, page=page, size=size
+        )
+        for row in rows:
+            replay = next((
+                r for r in reversed(store.rows("replays"))
+                if str(r.get("sample_id")) == str(row.get("id"))
+                and r.get("status") in {"待领取", "解析中", "失败待重试", "待确认"}
+            ), None)
+            result = next((
+                r for r in reversed(store.rows("parse_results"))
+                if str(r.get("sample_id")) == str(row.get("id"))
+            ), None)
+            row["回放状态"] = replay.get("status") if replay else "无在办回放"
+            row["当前阶段"] = replay.get("stage") if replay else "历史解析结果可查询"
+            row["最新回放单号"] = replay.get("id") if replay else row.get("active_replay_id", "")
+            row["最新解析价格"] = (result or {}).get("price")
+            row["最新模板版本"] = (result or {}).get("template_version")
+        return rows, total
+
+    def get_entry(self, entry_id: int) -> dict[str, Any] | None:
+        entry = super().get_entry(entry_id)
+        if entry is None:
+            return None
+        state = replay_flow.sample_state(entry_id)
+        if state.get("ok"):
+            for key in (
+                "parse_results", "latest_parse_result", "original_parse_result",
+                "replays", "active_replay", "receipts", "switch_receipts",
+                "template_switches", "ledger", "operation_order",
+                "recovery_records", "eligible_templates",
+            ):
+                entry[key] = state.get(key)
+            active = state.get("active_replay") or {}
+            latest = state.get("latest_parse_result") or {}
+            entry["回放状态"] = active.get("status", "无在办回放")
+            entry["当前阶段"] = active.get("stage", "历史解析结果可查询")
+            entry["最新回放单号"] = active.get("id", "")
+            entry["最新解析价格"] = latest.get("price")
+            entry["最新模板版本"] = latest.get("template_version")
+        return entry
+
+    def run_action(
+        self,
+        entry_id: int,
+        action: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+        context = context or {}
+        entry = store.find(self.MODULE, entry_id)
+        if entry is None:
+            return None, f"{self.ENTITY} {entry_id} 不存在或已归档", {"ok": False}
+
+        if action in self.REPLAY_START_ACTIONS:
+            response = replay_flow.start_replay(entry_id, context)
+            return response.get("entry"), response["message"], response
+
+        replay_id = context.get("replay_id") or entry.get("active_replay_id")
+        if not replay_id:
+            state = replay_flow.sample_state(entry_id)
+            active = state.get("active_replay") if state.get("ok") else None
+            replay_id = (active or {}).get("id")
+
+        if action in self.REPLAY_CONTINUE_ACTIONS:
+            if not replay_id:
+                started = replay_flow.start_replay(entry_id, context)
+                replay_id = (started.get("replay") or {}).get("id")
+                if not replay_id:
+                    return started.get("entry"), started["message"], started
+            response = replay_flow.continue_replay(str(replay_id), context)
+            return response.get("entry"), response["message"], response
+
+        if action in self.REPLAY_RETRY_ACTIONS:
+            if not replay_id:
+                return entry, "没有可重试的回放单；请先发起回放", {"ok": False}
+            response = replay_flow.retry_replay(str(replay_id), context)
+            return response.get("entry"), response["message"], response
+
+        if action in self.REPLAY_CONFIRM_ACTIONS:
+            if not replay_id:
+                return entry, "没有待确认的分轮回执", {"ok": False}
+            response = replay_flow.confirm_replay(str(replay_id), context)
+            return response.get("entry"), response["message"], response
+
+        if action in self.REPLAY_QUERY_ACTIONS:
+            state = replay_flow.sample_state(entry_id)
+            return self.get_entry(entry_id), "已按样本查询解析字段、回执与处理顺序", state
+
+        result = super().run_action(entry_id, action, context)
+        if len(result) == 3:
+            return result  # type: ignore[return-value]
+        rich_entry, message = result
+        return rich_entry, message, {}
 
     # ---- 业务扩展：样本留存与指纹去重 ----
 
@@ -70,24 +183,57 @@ class SampleStoreService(BaseModuleService):
         }
 
     def replay_to_parser(self, entry_id: int) -> dict[str, Any]:
-        """把已解析样本重新回放到解析模板做回归验证。"""
-        entry = store.find(self.MODULE, entry_id)
-        if entry is None:
-            return {"ok": False, "message": "样本不存在"}
-        site = entry.get("站点名称", "")
-        template = next(
-            (t for t in store.rows("page_parser")
-             if t.get("适用站点") == site and t.get("status") == "已启用"), None
-        )
-        if template is None:
-            return {"ok": False, "message": f"站点 {site} 没有启用中的解析模板"}
-        entry["status"] = "已保存"
-        entry["pending"] = True
-        return {
-            "ok": True,
-            "message": "样本已回放解析",
-            "template": template.get("模板名称", ""),
-        }
+        """创建独立回放单；保留样本已解析状态和全部历史解析结果。"""
+        response = replay_flow.start_replay(entry_id, {"actor": "页面样本库"})
+        state = replay_flow.sample_state(entry_id)
+        eligible = state.get("eligible_templates") if isinstance(state, dict) else []
+        if eligible:
+            response["template"] = eligible[-1].get("template_name") or eligible[-1].get("version")
+            response["eligible_template"] = eligible[-1]
+        return response
+
+    def continue_replay(
+        self,
+        entry_id: int,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """继续该样本当前在办的回放；没有在办单时先入队。"""
+        context = dict(context or {})
+        entry = store.find(self.MODULE, entry_id) or {}
+        replay_id = context.get("replay_id") or entry.get("active_replay_id")
+        if not replay_id:
+            state = replay_flow.sample_state(entry_id)
+            replay_id = (state.get("active_replay") or {}).get("id") if state.get("ok") else None
+        if not replay_id:
+            started = replay_flow.start_replay(entry_id, context)
+            replay_id = (started.get("replay") or {}).get("id")
+            if not replay_id:
+                return started
+        return replay_flow.continue_replay(str(replay_id), context)
+
+    def retry_replay(
+        self,
+        entry_id: int,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """用原回放单和幂等键重试，保证同一笔只登记一份有效结果。"""
+        context = dict(context or {})
+        entry = store.find(self.MODULE, entry_id) or {}
+        replay_id = context.get("replay_id") or entry.get("active_replay_id")
+        if not replay_id:
+            state = replay_flow.sample_state(entry_id)
+            replay_id = (state.get("active_replay") or {}).get("id") if state.get("ok") else None
+        if not replay_id:
+            return {"ok": False, "message": "没有可重试的回放单，请先发起回放"}
+        return replay_flow.retry_replay(str(replay_id), context)
+
+    def receipt_state(self, entry_id: int) -> dict[str, Any]:
+        """按样本查询结构化解析字段、分轮回执、切换回执和处理顺序。"""
+        return replay_flow.sample_state(entry_id)
+
+    def query_receipts(self, entry_id: int) -> dict[str, Any]:
+        """receipt_state 的业务命名别名。"""
+        return self.receipt_state(entry_id)
 
     def quarantine_oldest(self, batch: str, max_keep: int = 50) -> dict[str, Any]:
         """批次超过容量时把最旧样本送入失败隔离区归档。"""

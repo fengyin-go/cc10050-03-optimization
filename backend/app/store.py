@@ -10,13 +10,19 @@ from app.seed import SEED_ROWS
 
 
 class Store:
+    # 回放协同表是领域内部台账，不作为第 21+ 个业务模块出现在健康检查/总览导航中。
+    INTERNAL_TABLES = {
+        "parse_results", "replays", "template_switches",
+        "idempotency_keys", "operation_ledger",
+    }
+
     def __init__(self) -> None:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        return sorted(name for name in self._tables if name not in self.INTERNAL_TABLES)
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])

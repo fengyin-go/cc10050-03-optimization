@@ -15,6 +15,23 @@
       </div>
     </header>
 
+    <SampleReplayPanel
+      v-if="meta.key === 'sample_store'"
+      :key="samplePanelKey"
+      :samples="rows"
+      :sample-id="flowSampleId"
+      :initial-replay="initialReplayId"
+      :initial-view="initialView"
+      @update:sample-id="rememberSample"
+    />
+    <TemplateSwitchPanel
+      v-else-if="meta.key === 'page_parser'"
+      :key="templatePanelKey"
+      :templates="rows"
+      :default-sample-id="flowSampleId"
+      :initial-template-id="flowTemplateId"
+    />
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -94,8 +111,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
+import SampleReplayPanel from '@/components/SampleReplayPanel.vue'
+import TemplateSwitchPanel from '@/components/TemplateSwitchPanel.vue'
 import {
   createEntry,
   downloadEntries,
@@ -106,6 +126,7 @@ import {
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
+const route = useRoute()
 const meta = moduleMeta(props.moduleKey)
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
@@ -115,6 +136,18 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const storedSampleId = Number(window.sessionStorage.getItem('sample-flow:last-id'))
+const flowSampleId = ref(Number(route.query.sample) || (storedSampleId > 0 ? storedSampleId : 4))
+const initialReplayId = ref(typeof route.query.replay === 'string' ? route.query.replay : '')
+const initialView = ref(typeof route.query.view === 'string' ? route.query.view : '')
+const samplePanelKey = ref(0)
+const templatePanelKey = ref(0)
+const flowTemplateId = ref(Number(route.query.template) || 5)
+
+function rememberSample(sampleId: number) {
+  flowSampleId.value = sampleId
+  window.sessionStorage.setItem('sample-flow:last-id', String(sampleId))
+}
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -165,13 +198,36 @@ async function submitCreate() {
   }
 }
 
+const SAMPLE_FLOW_ACTIONS = new Set([
+  '回放', '发起回放', '接续回放', '继续回放', '重试回放', '确认回执', '查询回执',
+])
+const TEMPLATE_FLOW_ACTIONS = new Set(['切换模板', '切换版本', '领取回放样本'])
+
 async function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
   try {
-    const result = await applyAction(meta.key, Number(row.id), action)
+    const result = await applyAction(meta.key, Number(row.id), action) as any
+    if (meta.key === 'sample_store' && SAMPLE_FLOW_ACTIONS.has(action)) {
+      rememberSample(Number(row.id))
+      // 行内动作只刷新协同台并展示主操作，不自动弹模态框，避免遮挡后续按钮；
+      // 从模板页带 ?replay=... 返回时才直接打开对应回放。
+      samplePanelKey.value += 1
+    }
+    if (meta.key === 'page_parser' && TEMPLATE_FLOW_ACTIONS.has(action)) {
+      flowTemplateId.value = Number(row.id)
+      templatePanelKey.value += 1
+    }
     if (!result.ok) throw new Error(result.message)
     await reload()
   } catch (error) {
+    if (meta.key === 'sample_store' && SAMPLE_FLOW_ACTIONS.has(action)) {
+      rememberSample(Number(row.id))
+      samplePanelKey.value += 1
+    }
+    if (meta.key === 'page_parser' && TEMPLATE_FLOW_ACTIONS.has(action)) {
+      flowTemplateId.value = Number(row.id)
+      templatePanelKey.value += 1
+    }
     errorMessage.value = error instanceof Error ? error.message : '操作失败'
   }
 }
@@ -186,6 +242,14 @@ async function reload() {
     errorMessage.value = error instanceof Error ? error.message : '业务列表读取失败'
   }
 }
+
+watch(() => [route.query.sample, route.query.replay, route.query.view], () => {
+  const querySample = Number(route.query.sample)
+  if (querySample) rememberSample(querySample)
+  initialReplayId.value = typeof route.query.replay === 'string' ? route.query.replay : ''
+  initialView.value = typeof route.query.view === 'string' ? route.query.view : ''
+  samplePanelKey.value += 1
+})
 
 onMounted(reload)
 </script>

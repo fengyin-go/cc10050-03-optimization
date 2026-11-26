@@ -13,7 +13,9 @@
         <span class="head-desc">面向多区域站点的商品价格抓取、规格归一、比价计算与变价告警的采集治理平台</span>
         <span class="head-user">当前值班：数据工程组</span>
       </header>
-      <RouterView />
+      <RouterView v-slot="{ Component }">
+        <component :is="Component" :key="$route.path" />
+      </RouterView>
     </main>
   </div>
 </template>
